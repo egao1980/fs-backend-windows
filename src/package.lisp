@@ -90,4 +90,31 @@
    #:+error-io-incomplete+
    #:+error-io-pending+
    #:+error-notify-enum-dir+
-   #:+error-notify-cleanup+))
+   #:+error-notify-cleanup+
+   ;; R4c-3: the clone mechanism :block-clone
+   #:+block-clone-rank+
+   #:block-clone-available-p
+   #:block-clone-file
+   #:block-clone-error
+   ;; pure, every OS: the chunk plan, error mapping, volume flags, ioctl input
+   #:block-clone-chunks
+   #:block-clone-error-reason
+   #:volume-flags-block-clone-p
+   #:encode-duplicate-extents-data
+   ;; Windows helpers (signal BLOCK-CLONE-ERROR off Windows)
+   #:volume-supports-block-clone-p
+   #:volume-guid-path
+   #:volume-cluster-size
+   #:file-cluster-runs
+   ;; FSCTL_* (winioctl.h), volume flags
+   #:+fsctl-duplicate-extents-to-file+
+   #:+fsctl-set-sparse+
+   #:+fsctl-get-integrity-information+
+   #:+fsctl-set-integrity-information+
+   #:+fsctl-get-retrieval-pointers+
+   #:+file-supports-block-refcounting+
+   ;; Win32 error codes of the clone
+   #:+error-not-same-device+
+   #:+error-not-supported+
+   #:+error-invalid-parameter+
+   #:+error-block-too-many-references+))

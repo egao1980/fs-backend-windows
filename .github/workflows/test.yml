@@ -8,8 +8,79 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Windows runs the ReadDirectoryChangesW tests; macOS and Linux load the
-  # system, run the pure tests (buffer parser, paths, accumulator, barrier)
-  # and record skips for the rest (:rdcw is registered but unavailable).
+  # Windows runs the ReadDirectoryChangesW tests and the NTFS half of block
+  # cloning (detection → :unsupported-volume, :auto copies); macOS and Linux
+  # load the system, run the pure tests (buffer parser, paths, accumulator,
+  # barrier, chunk plan, error table, ioctl encoding) and record skips for
+  # the rest (:rdcw and :block-clone are registered but unavailable).
   test:
     uses: egao1980/cl-repository/.github/workflows/test-system.yml@main
+
+  # R4c-3: a real ReFS volume (a VHDX formatted with diskpart; the runner is
+  # an administrator and Windows Server 2025 formats ReFS), plus a Dev Drive
+  # when Format-Volume -DevDrive works. FS_BACKEND_WINDOWS_REQUIRE_REFS=1
+  # makes the ReFS tests fail, not skip, when the volume is missing.
+  refs:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SBCL_VERSION: "2.6.7"
+      ROSWELL_VERSION: "26.02.116"
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: ReFS volume (R:)
+        shell: pwsh
+        run: |
+          $vhd = "$env:RUNNER_TEMP\refs.vhdx"
+          @"
+          create vdisk file="$vhd" maximum=4096 type=expandable
+          attach vdisk
+          create partition primary
+          format fs=refs quick label=r4c
+          assign letter=R
+          "@ | Set-Content "$env:RUNNER_TEMP\refs.txt"
+          diskpart /s "$env:RUNNER_TEMP\refs.txt"
+          if (-not (Test-Path R:\)) { throw "no ReFS volume" }
+          fsutil fsinfo volumeinfo R: | Select-String "File System Name|Block Cloning"
+          if (-not (fsutil fsinfo volumeinfo R: | Select-String "Supports Block Cloning")) { throw "R: cannot block-clone" }
+
+      - name: Dev Drive (V:, optional)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $vhd = "$env:RUNNER_TEMP\devdrive.vhdx"
+          @"
+          create vdisk file="$vhd" maximum=51200 type=expandable
+          attach vdisk
+          create partition primary
+          assign letter=V
+          "@ | Set-Content "$env:RUNNER_TEMP\devdrive.txt"
+          diskpart /s "$env:RUNNER_TEMP\devdrive.txt"
+          Format-Volume -DriveLetter V -DevDrive -Confirm:$false -Force
+          fsutil devdrv query V:
+          "FS_BACKEND_WINDOWS_DEVDRIVE_DIR=V:\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: egao1980/cl-repository/.github/actions/setup-lisp@main
+        with:
+          sbcl-version: ${{ env.SBCL_VERSION }}
+          roswell-version: ${{ env.ROSWELL_VERSION }}
+
+      - uses: egao1980/cl-repository/.github/actions/ci@main
+        with:
+          phase: install
+          sbcl-dynamic-space-mb: 4096
+
+      - uses: egao1980/cl-repository/.github/actions/ci@main
+        with:
+          phase: test
+          sbcl-dynamic-space-mb: 4096
+        env:
+          FS_BACKEND_WINDOWS_REFS_DIR: 'R:\'
+          FS_BACKEND_WINDOWS_REQUIRE_REFS: "1"
