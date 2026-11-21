@@ -145,6 +145,60 @@ differently cased spelling), keeping that spelling."
   (uiop:run-program (format nil "cmd.exe /c ~A" command)
                     :directory dir :output :string :error-output :string))
 
+;;; --- Windows: edits through the UTF-16 Win32 API --------------------------------------
+;;;
+;;; SBCL's own file calls (OPEN, PROBE-FILE, DELETE-FILE, RENAME-FILE) pass
+;;; names to Win32 as UCS-2 (sb-win32 SYSTEM-STRING), so they cannot name a
+;;; file outside the BMP (a surrogate pair, e.g. U+1F600). These helpers go
+;;; through CreateFileW / WriteFile / DeleteFileW / MoveFileExW with UTF-16LE
+;;; names: the system's CreateFileW binding and %WSTRING type, plus three
+;;; bindings of the tests' own (made with the system's %DEFINE-KERNEL32, so
+;;; they load, and signal RDCW-ERROR, off Windows).
+
+(fs-backend-windows::%define-kernel32 (%test-write-file "WriteFile") :boolean
+  (handle :pointer) (buffer :pointer) (length :uint32) (written :pointer) (overlapped :pointer))
+(fs-backend-windows::%define-kernel32 (%test-delete-file "DeleteFileW") :boolean
+  (name fs-backend-windows::%wstring))
+(fs-backend-windows::%define-kernel32 (%test-move-file "MoveFileExW") :boolean
+  (from fs-backend-windows::%wstring) (to fs-backend-windows::%wstring) (flags :uint32))
+
+(defconstant +generic-write+ #x40000000)
+(defconstant +create-always+ 2)
+(defconstant +file-attribute-normal+ #x80)
+
+(defun wide-name (dir rel)
+  "The native name (a string, may hold non-BMP characters) of REL below DIR."
+  (concatenate 'string (native (uiop:ensure-directory-pathname dir))
+               (substitute #\\ #\/ rel)))
+
+(defun put-wide (dir rel text)
+  "Create or overwrite the file REL below DIR (its directory must exist) with
+TEXT (UTF-8) through CreateFileW/WriteFile; → its native name."
+  (let* ((name (wide-name dir rel))
+         (h (fs-backend-windows::%create-file
+             name +generic-write+ 0 (cffi:null-pointer) +create-always+
+             +file-attribute-normal+ (cffi:null-pointer))))
+    (when (fs-backend-windows::%invalid-handle-p h)
+      (error "CreateFileW ~S failed (error ~D)" name (fs-backend-windows::%get-last-error)))
+    (unwind-protect
+         (cffi:with-foreign-string ((buffer size) text :encoding :utf-8 :null-terminated-p nil)
+           (cffi:with-foreign-object (written :uint32)
+             (unless (%test-write-file h buffer size written (cffi:null-pointer))
+               (error "WriteFile ~S failed (error ~D)" name (fs-backend-windows::%get-last-error)))))
+      (fs-backend-windows::%close-handle h))
+    name))
+
+(defun delete-wide (dir rel)
+  "DeleteFileW of REL below DIR; → true on success."
+  (%test-delete-file (wide-name dir rel)))
+
+(defun move-wide (dir from to)
+  "MoveFileExW (no flags) of FROM to TO, both below DIR; → (values ok-p code),
+CODE the GetLastError of a failure."
+  (if (%test-move-file (wide-name dir from) (wide-name dir to) 0)
+      (values t 0)
+      (values nil (fs-backend-windows::%get-last-error))))
+
 (defun watch (dir &rest keys)
   (apply #'sp:fs-watch *fs* (uiop:ensure-directory-pathname dir) :mechanism :rdcw keys))
 

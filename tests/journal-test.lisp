@@ -87,14 +87,29 @@
 ;;; --- names -------------------------------------------------------------------------
 
 (deftest-windows rdcw-journal-unicode-names
+  ;; SBCL's own file calls encode names as UCS-2 and cannot name 😀 (outside
+  ;; the BMP): that file is made, edited and deleted through CreateFileW /
+  ;; DeleteFileW (PUT-WIDE, DELETE-WIDE in support.lisp).
   (with-work-dir (dir)
-    (with-journal (j dir)
-      (put dir "é/日本.txt" "x")
-      (put dir "😀.txt" "y")
-      (destructuring-bind (paths complete-p) (drain j)
-        (ok complete-p)
-        (ok (covers-p paths "é/日本.txt") (format nil "BMP names: ~S" paths))
-        (ok (covers-p paths "😀.txt") (format nil "a surrogate pair: ~S" paths))))))
+    (unwind-protect
+         (with-journal (j dir)
+           (put dir "é/日本.txt" "x")
+           (put-wide dir "😀.txt" "y")
+           (destructuring-bind (paths complete-p) (drain j)
+             (ok complete-p)
+             (ok (covers-p paths "é/日本.txt") (format nil "BMP names: ~S" paths))
+             (ok (covers-p paths "😀.txt") (format nil "a surrogate pair: ~S" paths)))
+           (put-wide dir "😀.txt" "edited")
+           (destructuring-bind (paths complete-p) (drain j)
+             (ok complete-p)
+             (ok (covers-p paths "😀.txt") (format nil "a surrogate pair, edited: ~S" paths)))
+           (ok (delete-wide dir "😀.txt") "DeleteFileW of the surrogate-pair name")
+           (destructuring-bind (paths complete-p) (drain j)
+             (if complete-p
+                 (ok (covers-p paths "😀.txt") (format nil "a surrogate pair, deleted: ~S" paths))
+                 (pass "incomplete: rescan everything"))))
+      ;; Cleanup cannot remove it through SBCL either.
+      (delete-wide dir "😀.txt"))))
 
 (deftest-windows rdcw-journal-case
   (with-work-dir (dir)
@@ -237,12 +252,21 @@
       (ok (equal '(nil nil) (drain j)) "the root moved: complete-p NIL")
       (put dir "moved/a.txt" "edited")
       (ok (equal '(nil nil) (drain j)) "for good"))
-    ;; An ancestor renamed counts too.
+    ;; An ancestor cannot be renamed: NTFS refuses to rename a directory while
+    ;; a handle is open below it (ERROR_ACCESS_DENIED), whatever its share
+    ;; mode. The journal is untouched by the attempt.
     (make-tree dir '("p/w/a.txt"))
     (with-journal (j (sub dir "p/w/"))
       (drain j)
-      (cmd dir "ren p q")
-      (ok (equal '(nil nil) (drain j)) "an ancestor moved: complete-p NIL"))))
+      (multiple-value-bind (moved code) (move-wide dir "p" "q")
+        (ok (not moved) "an ancestor of a watched root cannot be renamed")
+        (ok (= code +error-access-denied+) (format nil "ERROR_ACCESS_DENIED (got ~D)" code)))
+      (ok (probe-file (sub dir "p/w/a.txt")) "the tree is where it was")
+      (ok (equal '(nil t) (drain j)) "the failed rename changed nothing: complete, no paths")
+      (put dir "p/w/a.txt" "edited")
+      (destructuring-bind (paths complete-p) (drain j)
+        (ok complete-p "the journal is still usable")
+        (ok (covers-p paths "a.txt") (format nil "a.txt reported: ~S" paths))))))
 
 (deftest-windows rdcw-injected-root-error
   (with-work-dir (dir)
@@ -345,10 +369,20 @@
     (make-tree dir +tree+)
     ;; One cycle first, so lazily made threads or handles are counted in BEFORE.
     (let ((j (watch dir))) (drain j) (sp:journal-close j))
-    (let ((threads (thread-count))
-          (journals (rdcw-handle-count))
-          (handles (process-handle-count)))
-      (dotimes (k 50)
+    ;; SBCL's win32 runtime leaks process handles per Lisp thread created
+    ;; (one on SBCL 2.6.7), and each journal owns one watcher thread. Measure
+    ;; that leak with the same number of bare thread create/join cycles: a
+    ;; journal may add no more handles than a bare thread.
+    (let* ((cycles 50)
+           (bare-before (process-handle-count))
+           (per-thread (progn
+                         (dotimes (k cycles)
+                           (bt2:join-thread (bt2:make-thread (lambda () k) :name "bare")))
+                         (max 0 (/ (- (process-handle-count) bare-before) cycles))))
+           (threads (thread-count))
+           (journals (rdcw-handle-count))
+           (handles (process-handle-count)))
+      (dotimes (k cycles)
         (let ((j (watch dir)))
           (put dir "sub/a.txt" (princ-to-string k))
           (drain j)
@@ -359,6 +393,6 @@
       (ok (= journals (rdcw-handle-count)) "every journal handle closed")
       (ok (wait-until (lambda () (<= (thread-count) threads)) :timeout 3)
           (format nil "no thread leak: ~D threads before, ~D after 50 cycles" threads (thread-count)))
-      (ok (<= (process-handle-count) (+ handles 5))
-          (format nil "no handle leak: ~D process handles before, ~D after 50 cycles (3 per journal)"
-                  handles (process-handle-count))))))
+      (ok (<= (process-handle-count) (+ handles (* cycles per-thread) 5))
+          (format nil "no handle leak: ~D process handles before, ~D after ~D cycles (3 per journal; bare threads leak ~A each)"
+                  handles (process-handle-count) cycles per-thread)))))

@@ -16,7 +16,7 @@
   :in-order-to ((test-op (test-op "fs-backend-windows/tests"))))
 
 (defsystem "fs-backend-windows/tests"
-  :depends-on ("fs-backend-windows" "cl-stack-pathlib/journal-suite" "bordeaux-threads" "rove" "uiop")
+  :depends-on ("fs-backend-windows" "cl-stack-pathlib/journal-suite" "bordeaux-threads" "cffi" "rove" "uiop")
   :pathname "tests"
   :serial t
   :components ((:file "package")
