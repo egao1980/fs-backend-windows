@@ -1,10 +1,5 @@
 (in-package #:fs-backend-windows)
 
-;;; Contract stubs: every call of %R4C3-PENDING is replaced by the
-;;; implementation, and then %R4C3-PENDING itself is deleted.
-(defun %r4c3-pending (what)
-  (error "R4c-3 not implemented yet: ~A" what))
-
 ;;; R4c-3: the pure half of :BLOCK-CLONE. Nothing in this file calls Win32,
 ;;; so all of it runs, and is tested, on every OS:
 ;;;
@@ -26,8 +21,16 @@ file, which BLOCK-CLONE-FILE has already set to SIZE). SIZE 0 gives NIL.
 SIZE a non-negative integer, CLUSTER-SIZE and MAX-CHUNK positive integers,
 MAX-CHUNK a multiple of CLUSTER-SIZE; otherwise TYPE-ERROR, checked even
 when SIZE is 0."
-  (declare (ignore size cluster-size max-chunk))
-  (%r4c3-pending 'block-clone-chunks))
+  (check-type size (integer 0))
+  (check-type cluster-size (integer 1))
+  (unless (and (typep max-chunk '(integer 1)) (zerop (mod max-chunk cluster-size)))
+    (error 'simple-type-error
+           :datum max-chunk :expected-type `(integer ,cluster-size)
+           :format-control "MAX-CHUNK ~S is not a positive multiple of the cluster size ~D"
+           :format-arguments (list max-chunk cluster-size)))
+  (loop with rounded = (* cluster-size (ceiling size cluster-size))
+        for offset from 0 below rounded by max-chunk
+        collect (cons offset (min max-chunk (- rounded offset)))))
 
 (defun block-clone-error-reason (code)
   "The fallback reason for the Win32 error CODE (GetLastError) of a failed
@@ -39,15 +42,18 @@ signals BLOCK-CLONE-ERROR instead:
                                                      → :CLONE-FAILED
   anything else (0, ERROR_ACCESS_DENIED, ERROR_DISK_FULL, …, a non-integer)
                                                      → NIL"
-  (declare (ignore code))
-  (%r4c3-pending 'block-clone-error-reason))
+  (case code                            ; EQL keys: a non-integer gives NIL
+    ((1 50) :unsupported-volume)        ; ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED
+    ((17) :cross-volume)                ; ERROR_NOT_SAME_DEVICE
+    ((87 347) :clone-failed)            ; ERROR_INVALID_PARAMETER, ..._TOO_MANY_REFERENCES
+    (otherwise nil)))
 
 (defun volume-flags-block-clone-p (flags)
   "True (T) when the lpFileSystemFlags FLAGS of GetVolumeInformationW have
 FILE_SUPPORTS_BLOCK_REFCOUNTING (#x08000000), else NIL. FLAGS is a DWORD
 (an integer in [0, 2^32)); otherwise TYPE-ERROR."
-  (declare (ignore flags))
-  (%r4c3-pending 'volume-flags-block-clone-p))
+  (check-type flags (unsigned-byte 32))
+  (if (logtest flags +file-supports-block-refcounting+) t nil))
 
 (defun encode-duplicate-extents-data (handle-value source-offset target-offset byte-count)
   "The DUPLICATE_EXTENTS_DATA input buffer of FSCTL_DUPLICATE_EXTENTS_TO_FILE
@@ -56,5 +62,14 @@ FileHandle (the SOURCE handle's value, 8 octets) at 0, SourceFileOffset at 8,
 TargetFileOffset at 16, ByteCount at 24 (LARGE_INTEGERs). HANDLE-VALUE is an
 integer in [0, 2^64), the offsets and BYTE-COUNT integers in [0, 2^63);
 otherwise TYPE-ERROR."
-  (declare (ignore handle-value source-offset target-offset byte-count))
-  (%r4c3-pending 'encode-duplicate-extents-data))
+  (check-type handle-value (unsigned-byte 64))
+  (check-type source-offset (unsigned-byte 63))
+  (check-type target-offset (unsigned-byte 63))
+  (check-type byte-count (unsigned-byte 63))
+  (let ((octets (make-array +duplicate-extents-data-size+
+                            :element-type '(unsigned-byte 8) :initial-element 0)))
+    (loop for n in (list handle-value source-offset target-offset byte-count)
+          for base from 0 by 8
+          do (dotimes (i 8)
+               (setf (aref octets (+ base i)) (ldb (byte 8 (* 8 i)) n))))
+    octets))

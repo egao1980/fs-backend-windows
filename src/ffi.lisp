@@ -287,6 +287,13 @@ FS-CLONE-FILE the restart USE-COPY is offered. Also signalled by the
 Windows helpers (VOLUME-GUID-PATH, FILE-CLUSTER-RUNS, ...) when their call
 fails, and by every :BLOCK-CLONE function off Windows (CODE NIL)."))
 
+(defconstant +file-read-attributes+ #x80
+  "FILE_READ_ATTRIBUTES (winnt.h): no data access (FILE-CLUSTER-RUNS).")
+(defconstant +file-disposition-info+ 4
+  "FileDispositionInfo: SetFileInformationByHandle with FILE_DISPOSITION_INFO
+{ BOOLEAN DeleteFile; } (1 octet) on a handle opened with DELETE access: the
+file is deleted when the handle closes.")
+
 ;;; --- kernel32 (block cloning) ----------------------------------------------------------
 
 (%define-kernel32 (%get-volume-information "GetVolumeInformationW") :boolean
