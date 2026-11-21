@@ -6,7 +6,7 @@
   (sb-alien:with-alien ((n sb-alien:unsigned-int))
     (sb-alien:alien-funcall
      (sb-alien:extern-alien "GetProcessHandleCount"
-                            (function sb-alien:int sb-alien:unsigned-long (* sb-alien:unsigned-int)))
+                            (function sb-alien:int (sb-alien:unsigned 64) (* sb-alien:unsigned-int)))
      (ldb (byte 64 0) -1) (sb-alien:addr n))
     n))
 (defun diag-wstr (s)
@@ -28,13 +28,13 @@
     (ensure-directories-exist (uiop:ensure-directory-pathname (uiop:parse-native-namestring w)))
     (let ((h (sb-alien:alien-funcall
               (sb-alien:extern-alien "CreateFileW"
-                                     (function sb-alien:unsigned-long (* (sb-alien:unsigned 16)) sb-alien:unsigned-int sb-alien:unsigned-int
-                                               sb-alien:unsigned-long sb-alien:unsigned-int sb-alien:unsigned-int sb-alien:unsigned-long))
+                                     (function (sb-alien:unsigned 64) (* (sb-alien:unsigned 16)) sb-alien:unsigned-int sb-alien:unsigned-int
+                                               (sb-alien:unsigned 64) sb-alien:unsigned-int sb-alien:unsigned-int (sb-alien:unsigned 64)))
               (diag-wstr w) 1 7 0 3 (logior #x02000000 #x40000000) 0)))
       (format t "~&DIAG RENAME: handle ~X~%" h)
       (let ((r (sb-alien:alien-funcall move (diag-wstr p) (diag-wstr (format nil "~A\\diagq" tmp)) 0)))
         (format t "~&DIAG RENAME: parent rename with child handle open -> ~D (error ~D)~%" r (sb-alien:alien-funcall gle)))
-      (sb-alien:alien-funcall (sb-alien:extern-alien "CloseHandle" (function sb-alien:int sb-alien:unsigned-long)) h)
+      (sb-alien:alien-funcall (sb-alien:extern-alien "CloseHandle" (function sb-alien:int (sb-alien:unsigned 64))) h)
       (let ((r (sb-alien:alien-funcall move (diag-wstr p) (diag-wstr (format nil "~A\\diagq" tmp)) 0)))
         (format t "~&DIAG RENAME: parent rename after close -> ~D (error ~D)~%" r (sb-alien:alien-funcall gle)))))
   (handler-case (with-open-file (s (merge-pathnames (format nil "~C.txt" (code-char 128512)) (uiop:temporary-directory))
