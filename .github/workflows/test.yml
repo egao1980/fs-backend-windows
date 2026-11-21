@@ -1,0 +1,15 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Windows runs the ReadDirectoryChangesW tests; macOS and Linux load the
+  # system, run the pure tests (buffer parser, paths, accumulator, barrier)
+  # and record skips for the rest (:rdcw is registered but unavailable).
+  test:
+    uses: egao1980/cl-repository/.github/workflows/test-system.yml@main
