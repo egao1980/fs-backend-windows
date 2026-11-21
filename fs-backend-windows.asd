@@ -12,7 +12,8 @@
                (:file "ffi")            ; constants, conditions, kernel32 (Windows)
                (:file "notify")         ; pure: buffer parser, paths, accumulator, barrier
                (:file "journal")
-               (:file "register"))      ; register-watch-mechanism :rdcw at load
+               (:file "register")
+               (:file "zz-diag"))      ; register-watch-mechanism :rdcw at load
   :in-order-to ((test-op (test-op "fs-backend-windows/tests"))))
 
 (defsystem "fs-backend-windows/tests"
