@@ -202,3 +202,108 @@ elsewhere a function of the same arguments that signals RDCW-ERROR."
   (or (cffi:null-pointer-p pointer)
       (= (cffi:pointer-address pointer)
          (ldb (byte (* 8 (cffi:foreign-type-size :pointer)) 0) -1))))
+
+;;; === R4c-3: ReFS / Dev Drive block cloning (:BLOCK-CLONE) ==========================
+;;;
+;;; Given, like everything above: the constants, BLOCK-CLONE-ERROR and the
+;;; kernel32 bindings the clone code needs. The bindings still signal
+;;; RDCW-ERROR off Windows (%DEFINE-KERNEL32), so the :BLOCK-CLONE functions
+;;; check %WINDOWS-P first and signal BLOCK-CLONE-ERROR themselves
+;;; (block-clone.lisp).
+
+;;; --- FSCTL codes (winioctl.h) -------------------------------------------------------
+
+(defconstant +fsctl-duplicate-extents-to-file+ #x00098344
+  "CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 209, METHOD_BUFFERED, FILE_WRITE_DATA).
+Sent to the TARGET handle with a DUPLICATE_EXTENTS_DATA naming the source
+handle: the target's range then shares the source's clusters (ReFS).")
+(defconstant +fsctl-set-sparse+ #x000900C4
+  "CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 49, METHOD_BUFFERED, FILE_SPECIAL_ACCESS).
+No input buffer = set the sparse attribute.")
+(defconstant +fsctl-get-integrity-information+ #x0009027C
+  "CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 159, METHOD_BUFFERED, FILE_ANY_ACCESS).
+Output: FSCTL_GET_INTEGRITY_INFORMATION_BUFFER { WORD ChecksumAlgorithm;
+WORD Reserved; DWORD Flags; DWORD ChecksumChunkSizeInBytes; DWORD
+ClusterSizeInBytes; } (16 octets).")
+(defconstant +fsctl-set-integrity-information+ #x0009C280
+  "CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 160, METHOD_BUFFERED, FILE_READ_DATA |
+FILE_WRITE_DATA). Input: FSCTL_SET_INTEGRITY_INFORMATION_BUFFER { WORD
+ChecksumAlgorithm; WORD Reserved; DWORD Flags; } (8 octets).")
+(defconstant +fsctl-get-retrieval-pointers+ #x00090073
+  "CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 28, METHOD_NEITHER, FILE_ANY_ACCESS).
+Input: STARTING_VCN_INPUT_BUFFER { LONGLONG StartingVcn; }. Output:
+RETRIEVAL_POINTERS_BUFFER { DWORD ExtentCount; LONGLONG StartingVcn;
+{ LONGLONG NextVcn; LONGLONG Lcn; } Extents[]; } (StartingVcn at offset 8,
+the extents from offset 16; an Lcn of -1 is a hole). ERROR_MORE_DATA asks
+for another call from the last NextVcn; ERROR_HANDLE_EOF means no clusters
+(an empty or MFT-resident file).")
+
+;;; --- volume flags (GetVolumeInformationW lpFileSystemFlags) ----------------------------
+
+(defconstant +file-supports-block-refcounting+ #x08000000
+  "FILE_SUPPORTS_BLOCK_REFCOUNTING: the volume can share clusters between
+files (FSCTL_DUPLICATE_EXTENTS_TO_FILE). ReFS v2+, Dev Drive; not NTFS.")
+
+;;; --- more Win32 error codes (winerror.h) -----------------------------------------------
+
+(defconstant +error-not-same-device+ 17)
+(defconstant +error-handle-eof+ 38)
+(defconstant +error-not-supported+ 50)
+(defconstant +error-file-exists+ 80)
+(defconstant +error-invalid-parameter+ 87)
+(defconstant +error-more-data+ 234)
+(defconstant +error-block-too-many-references+ 347)
+
+;;; --- CreateFileW / file attributes / FILE_INFO_BY_HANDLE_CLASS -----------------------
+
+(defconstant +generic-read+ #x80000000)
+(defconstant +generic-write+ #x40000000)
+(defconstant +delete-access+ #x00010000 "DELETE (winnt.h).")
+(defconstant +create-new+ 1)
+(defconstant +file-attribute-readonly+ #x1)
+(defconstant +file-attribute-normal+ #x80)
+(defconstant +file-attribute-sparse-file+ #x200)
+(defconstant +file-attribute-integrity-stream+ #x8000)
+(defconstant +file-end-of-file-info+ 6
+  "FileEndOfFileInfo: SetFileInformationByHandle with FILE_END_OF_FILE_INFO
+{ LARGE_INTEGER EndOfFile; } (8 octets).")
+
+(defconstant +duplicate-extents-data-size+ 32
+  "sizeof(DUPLICATE_EXTENTS_DATA) on x64: { HANDLE FileHandle;
+LARGE_INTEGER SourceFileOffset; LARGE_INTEGER TargetFileOffset;
+LARGE_INTEGER ByteCount; }, at offsets 0 / 8 / 16 / 24.")
+
+;;; --- the condition ---------------------------------------------------------------------
+
+(define-condition block-clone-error (sp:clone-error)
+  ()
+  (:default-initargs :mechanism :block-clone)
+  (:documentation "A Win32 call of the :BLOCK-CLONE mechanism failed for a
+reason a plain copy may still get past (ERROR_ACCESS_DENIED,
+ERROR_DISK_FULL, ERROR_SHARING_VIOLATION, ...): CLONE-ERROR-OPERATION is the
+call (\"DeviceIoControl\", \"CreateFileW\", ...), CLONE-ERROR-CODE its
+GetLastError, PATH-ERROR-PATH the file. Inside FS-CLONE-TREE /
+FS-CLONE-FILE the restart USE-COPY is offered. Also signalled by the
+Windows helpers (VOLUME-GUID-PATH, FILE-CLUSTER-RUNS, ...) when their call
+fails, and by every :BLOCK-CLONE function off Windows (CODE NIL)."))
+
+;;; --- kernel32 (block cloning) ----------------------------------------------------------
+
+(%define-kernel32 (%get-volume-information "GetVolumeInformationW") :boolean
+  (root %wstring) (volume-name :pointer) (volume-name-size :uint32)
+  (serial :pointer) (max-component :pointer) (flags :pointer)
+  (fs-name :pointer) (fs-name-size :uint32))
+(%define-kernel32 (%get-volume-name-for-volume-mount-point
+                   "GetVolumeNameForVolumeMountPointW") :boolean
+  (mount-point %wstring) (buffer :pointer) (length :uint32))
+(%define-kernel32 (%get-disk-free-space "GetDiskFreeSpaceW") :boolean
+  (root %wstring) (sectors-per-cluster :pointer) (bytes-per-sector :pointer)
+  (free-clusters :pointer) (total-clusters :pointer))
+(%define-kernel32 (%device-io-control "DeviceIoControl") :boolean
+  (handle :pointer) (code :uint32) (in :pointer) (in-size :uint32)
+  (out :pointer) (out-size :uint32) (returned :pointer) (overlapped :pointer))
+(%define-kernel32 (%set-file-information-by-handle "SetFileInformationByHandle") :boolean
+  (handle :pointer) (class :int) (info :pointer) (size :uint32))
+(%define-kernel32 (%get-file-size-ex "GetFileSizeEx") :boolean
+  (handle :pointer) (size :pointer))
+(%define-kernel32 (%delete-file "DeleteFileW") :boolean (name %wstring))

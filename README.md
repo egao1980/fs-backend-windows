@@ -27,3 +27,20 @@ deleted or moved, for good.
 The buffer parser, the path and name rules (UTF-16, 8.3 aliases, case) and the drain barrier are
 plain Lisp and are tested on every OS. Tests: `cl-repo test` (Rove). They include
 `cl-stack-pathlib/journal-suite` with `:rdcw`, and the Windows tests skip with a note elsewhere.
+
+## Block cloning (`:block-clone`, 0.2.0)
+
+Loading the system also registers the clone mechanism `:block-clone` (rank 100) for
+cl-stack-pathlib 0.10.0's `fs-clone-tree` / `fs-clone-file` / `fs-open-area`. On ReFS volumes
+(a Dev Drive is one) each regular file is cloned with `FSCTL_DUPLICATE_EXTENTS_TO_FILE`: the clone
+shares the source's clusters until either side is written. NTFS and FAT volumes answer
+`:unsupported-volume`, two volumes `:cross-volume`, and `:auto` then copies.
+
+```lisp
+(cl-stack-pathlib:clone-tree #p"R:/work/project/" #p"R:/work/area/")   ; → report, :block-clone
+```
+
+The chunk plan, the error mapping, the volume flags and the ioctl encoding are plain Lisp, tested on
+every OS. The Windows tests run on NTFS in the canned job; the ReFS tests (content, sparse files,
+non-BMP names, cluster sharing via `FSCTL_GET_RETRIEVAL_POINTERS`, the clone suite) run in the `refs`
+job on a ReFS VHDX, or locally with `FS_BACKEND_WINDOWS_REFS_DIR` set to a directory on ReFS.
